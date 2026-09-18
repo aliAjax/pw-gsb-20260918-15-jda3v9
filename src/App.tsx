@@ -1,126 +1,225 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import { AddSpecimenForm } from "./components/AddSpecimenForm";
+import { CabinetView } from "./components/CabinetView";
+import { SpecimenDetail } from "./components/SpecimenDetail";
+import { SpecimenQueue } from "./components/SpecimenQueue";
+import {
+  canOccupy,
+  cleanSlot,
+  reidentify,
+  reviewReturn,
+  seal,
+  shelve,
+} from "./domain";
+import { loadState, resetState, saveState } from "./storage";
+import type { AppState, DomainResult, IdentificationStatus } from "./types";
 
-const project = {
-  "sourceNo": 9,
-  "id": "hxyfront-62007",
-  "port": 62007,
-  "title": "植物标本馆入库",
-  "domain": "植物标本馆",
-  "prompt": "开发一个植物标本馆压制标本入库前端项目，工作人员可以录入采集号、物种名称、采集地点、海拔、生境描述、采集人、压制状态、鉴定状态和馆藏位置。页面需要有入库队列、鉴定状态筛选、采集地点信息卡、馆藏柜位记录和单份标本详情页。",
-  "palette": [
-    "#166534",
-    "#0f766e",
-    "#ca8a04"
-  ],
-  "metrics": [
-    "入库队列",
-    "待鉴定",
-    "已上柜",
-    "采集点"
-  ],
-  "filters": [
-    "待压制",
-    "待鉴定",
-    "已入库",
-    "需补照"
-  ],
-  "fields": [
-    "采集号",
-    "物种名称",
-    "采集地点",
-    "海拔",
-    "生境描述",
-    "馆藏位置"
-  ],
-  "records": [
-    [
-      "HX-240615-01",
-      "槭属待定",
-      "海拔1420m",
-      "待鉴定"
-    ],
-    [
-      "HX-240615-08",
-      "蕨类",
-      "阴湿沟谷",
-      "已压制"
-    ],
-    [
-      "HX-240616-03",
-      "菊科",
-      "柜位B-12-04",
-      "已入库"
-    ]
-  ]
-};
+type FilterKey =
+  | "all"
+  | "fresh"
+  | "pending"
+  | "ready"
+  | "shelved"
+  | "sealed"
+  | "doubtful"
+  | "returned";
+
+const FILTERS: { key: FilterKey; label: string }[] = [
+  { key: "all", label: "全部" },
+  { key: "fresh", label: "待压制" },
+  { key: "pending", label: "待鉴定" },
+  { key: "ready", label: "可上柜" },
+  { key: "shelved", label: "已上柜" },
+  { key: "sealed", label: "已封存" },
+  { key: "doubtful", label: "存疑" },
+  { key: "returned", label: "退回" },
+];
+
+interface Toast {
+  id: number;
+  ok: boolean;
+  text: string;
+}
+
+function matches(key: FilterKey, s: AppState["specimens"][number]): boolean {
+  switch (key) {
+    case "all":
+      return true;
+    case "fresh":
+      return s.pressStatus === "fresh";
+    case "pending":
+      return s.identification === "pending";
+    case "ready":
+      return canOccupy(s) && s.slotId === null && !s.sealed;
+    case "shelved":
+      return s.slotId !== null;
+    case "sealed":
+      return s.sealed;
+    case "doubtful":
+      return s.identification === "doubtful";
+    case "returned":
+      return s.identification === "returned";
+  }
+}
 
 function App() {
+  const [state, setState] = useState<AppState>(() => loadState());
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // 刷新后状态仍在：每次提交写入 localStorage
+  useEffect(() => {
+    saveState(state);
+  }, [state]);
+
+  const notify = (ok: boolean, text: string) => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, ok, text }]);
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
+  };
+
+  const apply = (res: DomainResult) => {
+    if (res.ok) {
+      setState(res.state);
+      notify(true, res.message);
+    } else {
+      notify(false, res.message);
+    }
+  };
+
+  const handleShelve = (ids: string[]) => {
+    const res = shelve(state, ids);
+    apply(res);
+    if (res.ok) setSelected(new Set());
+  };
+
+  const handleReidentify = (id: string, to: IdentificationStatus) =>
+    apply(reidentify(state, id, to));
+
+  const handleSeal = (id: string) => apply(seal(state, id));
+
+  const handleReviewReturn = (id: string) => apply(reviewReturn(state, id));
+
+  const handleClean = (slotId: string) => apply(cleanSlot(state, slotId));
+
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const metrics = useMemo(
+    () => [
+      { label: "入库队列", value: state.specimens.length },
+      { label: "待鉴定", value: state.specimens.filter((s) => s.identification === "pending").length },
+      { label: "已上柜", value: state.specimens.filter((s) => s.slotId !== null).length },
+      { label: "待清理柜位", value: state.slots.filter((c) => c.status === "cleanup").length },
+    ],
+    [state],
+  );
+
+  const visible = state.specimens.filter((s) => matches(filter, s));
+  const visibleState: AppState = { ...state, specimens: visible };
+
   return (
     <main className="app">
       <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
+        <p>hxyfront-62007 · 植物标本馆 · Port 62007</p>
+        <h1>压制标本入库 · 鉴定放行与柜位封存闭环</h1>
+        <span>
+          压制完成且鉴定接受方可上柜；柜位按尺寸匹配，容量不足整次拒绝；改判存疑/退回释放未封存柜位并留存鉴定历史；
+          已封存标本仅可复核退回一次，原柜位先待清理、不可立即复用；重复上柜幂等，刷新后状态保留。
+        </span>
       </section>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
+        {metrics.map((m) => (
+          <article key={m.label}>
+            <small>{m.label}</small>
+            <strong>{m.value}</strong>
           </article>
         ))}
       </section>
 
       <section className="workspace">
         <aside className="panel">
-          <h2>{project.domain}筛选</h2>
+          <h2>鉴定状态筛选</h2>
           <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
+            {FILTERS.map((f) => (
+              <button
+                key={f.key}
+                className={filter === f.key ? "chip-active" : ""}
+                onClick={() => setFilter(f.key)}
+              >
+                {f.label}
+              </button>
             ))}
           </div>
+          <hr />
+          <h2>数据</h2>
+          <button
+            className="reset-btn"
+            onClick={() => {
+              if (window.confirm("恢复为初始演示数据？当前所有改动将丢失。")) {
+                setState(resetState());
+                setSelected(new Set());
+                setDetailId(null);
+                notify(true, "已恢复初始演示数据");
+              }
+            }}
+          >
+            重置演示数据
+          </button>
         </aside>
 
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存草稿</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
+        <AddSpecimenForm
+          state={state}
+          onCommit={(next, message) => {
+            setState(next);
+            notify(true, message);
+          }}
+          onReject={(message) => notify(false, message)}
+        />
       </section>
 
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
+      <SpecimenQueue
+        state={visibleState}
+        selected={selected}
+        onToggle={toggleOne}
+        onToggleAll={(ids) => setSelected(new Set(ids))}
+        onShelve={handleShelve}
+        onReidentify={handleReidentify}
+        onSeal={handleSeal}
+        onReviewReturn={handleReviewReturn}
+        onOpenDetail={setDetailId}
+      />
+
+      <div style={{ height: 18 }} />
+
+      <CabinetView state={state} onClean={handleClean} onOpenSpecimen={setDetailId} />
+
+      <SpecimenDetail
+        state={state}
+        specimenId={detailId}
+        onClose={() => setDetailId(null)}
+        onReidentify={handleReidentify}
+        onShelve={handleShelve}
+        onSeal={handleSeal}
+        onReviewReturn={handleReviewReturn}
+      />
+
+      <div className="toasts">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.ok ? "toast-ok" : "toast-err"}`}>
+            {t.ok ? "✓ " : "✕ "}{t.text}
           </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+        ))}
+      </div>
     </main>
   );
 }
