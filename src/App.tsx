@@ -1,126 +1,158 @@
+import { useEffect, useState } from "react";
 import "./styles.css";
+import {
+  addSpecimen,
+  cleanSlot,
+  counts,
+  reidentify,
+  seal,
+  shelveOne,
+  shelveBatch,
+  togglePressed,
+} from "./domain";
+import type { IdentStatus, NewSpecimenInput } from "./types";
+import { useHerbarium } from "./store";
+import QueueView from "./components/QueueView";
+import ShelveView from "./components/ShelveView";
+import CabinetsView from "./components/CabinetsView";
+import LocalitiesView from "./components/LocalitiesView";
+import SpecimenDetail from "./components/SpecimenDetail";
 
-const project = {
-  "sourceNo": 9,
-  "id": "hxyfront-62007",
-  "port": 62007,
-  "title": "植物标本馆入库",
-  "domain": "植物标本馆",
-  "prompt": "开发一个植物标本馆压制标本入库前端项目，工作人员可以录入采集号、物种名称、采集地点、海拔、生境描述、采集人、压制状态、鉴定状态和馆藏位置。页面需要有入库队列、鉴定状态筛选、采集地点信息卡、馆藏柜位记录和单份标本详情页。",
-  "palette": [
-    "#166534",
-    "#0f766e",
-    "#ca8a04"
-  ],
-  "metrics": [
-    "入库队列",
-    "待鉴定",
-    "已上柜",
-    "采集点"
-  ],
-  "filters": [
-    "待压制",
-    "待鉴定",
-    "已入库",
-    "需补照"
-  ],
-  "fields": [
-    "采集号",
-    "物种名称",
-    "采集地点",
-    "海拔",
-    "生境描述",
-    "馆藏位置"
-  ],
-  "records": [
-    [
-      "HX-240615-01",
-      "槭属待定",
-      "海拔1420m",
-      "待鉴定"
-    ],
-    [
-      "HX-240615-08",
-      "蕨类",
-      "阴湿沟谷",
-      "已压制"
-    ],
-    [
-      "HX-240616-03",
-      "菊科",
-      "柜位B-12-04",
-      "已入库"
-    ]
-  ]
-};
+type TabKey = "queue" | "shelve" | "cabinets" | "localities";
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "queue", label: "入库队列" },
+  { key: "shelve", label: "批量上柜" },
+  { key: "cabinets", label: "馆藏柜位" },
+  { key: "localities", label: "采集地点" },
+];
 
 function App() {
+  const { state, act, reset, toast } = useHerbarium();
+  const [tab, setTab] = useState<TabKey>("queue");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [visibleToast, setVisibleToast] = useState(toast);
+
+  // toast 4 秒自动消失
+  useEffect(() => {
+    setVisibleToast(toast);
+    if (!toast) return;
+    const timer = window.setTimeout(() => setVisibleToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const c = counts(state);
+  const detail = openId ? state.specimens.find((s) => s.id === openId) ?? null : null;
+
   return (
     <main className="app">
       <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
+        <p>hxyfront-62007 · 植物标本馆 · Port 62007</p>
+        <h1>植物标本馆入库闭环</h1>
+        <span>
+          鉴定放行 → 尺寸匹配上柜 → 封存归档 → 复核退回 → 柜位待清理。状态实时持久化，刷新页面后占用与封存状态仍在。
+        </span>
       </section>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
-          </article>
+        <article>
+          <small>入库队列（未封存）</small>
+          <strong>{c.queue}</strong>
+        </article>
+        <article>
+          <small>待鉴定</small>
+          <strong>{c.pending}</strong>
+        </article>
+        <article>
+          <small>已上柜</small>
+          <strong>{c.shelved}</strong>
+        </article>
+        <article>
+          <small>已封存</small>
+          <strong>{c.sealed}</strong>
+        </article>
+        <article>
+          <small>柜位待清理</small>
+          <strong className={c.cleaning > 0 ? "text-warn" : ""}>{c.cleaning}</strong>
+        </article>
+        <article>
+          <small>采集点</small>
+          <strong>{c.localities}</strong>
+        </article>
+      </section>
+
+      <nav className="tabs">
+        {TABS.map((t) => (
+          <button key={t.key} className={tab === t.key ? "tab tab-active" : "tab"} onClick={() => setTab(t.key)}>
+            {t.label}
+          </button>
         ))}
-      </section>
+        <button className="reset-btn" onClick={reset} title="清空本地数据并恢复演示数据">
+          重置演示数据
+        </button>
+      </nav>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}筛选</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
+      {tab === "queue" && (
+        <QueueView
+          state={state}
+          onOpen={setOpenId}
+          onAdd={(input: NewSpecimenInput) => act((d) => addSpecimen(d, input))}
+          onTogglePressed={(id) => act((d) => togglePressed(d, id))}
+          onReidentify={(id, to: IdentStatus, note) => act((d) => reidentify(d, id, to, note))}
+          onShelve={(id) => act((d) => shelveOne(d, id))}
+          onSeal={(id) => act((d) => seal(d, id))}
+        />
+      )}
+      {tab === "shelve" && (
+        <ShelveView
+          state={state}
+          onOpen={setOpenId}
+          onShelveBatch={(ids) => act((d) => shelveBatch(d, ids))}
+        />
+      )}
+      {tab === "cabinets" && (
+        <CabinetsView state={state} onOpen={setOpenId} onCleanSlot={(slotId) => act((d) => cleanSlot(d, slotId))} />
+      )}
+      {tab === "localities" && <LocalitiesView state={state} onOpen={setOpenId} />}
 
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存草稿</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
+      <section className="panel log-panel">
         <div className="heading">
           <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
+            <p>操作留痕</p>
+            <h2>近期操作日志</h2>
           </div>
-          <button>导出摘要</button>
         </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
+        {state.log.length === 0 && <p className="empty">暂无日志</p>}
+        <ul className="log-list">
+          {state.log.slice(0, 12).map((entry) => (
+            <li key={entry.id}>
+              <time>{entry.at}</time>
+              <span className="log-by">{entry.by}</span>
+              <span>{entry.text}</span>
+            </li>
           ))}
-        </div>
+        </ul>
       </section>
+
+      {detail && (
+        <SpecimenDetail
+          specimen={detail}
+          state={state}
+          onClose={() => setOpenId(null)}
+          onTogglePressed={(id) => act((d) => togglePressed(d, id))}
+          onReidentify={(id, to, note) => act((d) => reidentify(d, id, to, note))}
+          onShelve={(id) => act((d) => shelveOne(d, id))}
+          onSeal={(id) => act((d) => seal(d, id))}
+          onCleanSlot={(slotId) => act((d) => cleanSlot(d, slotId))}
+        />
+      )}
+
+      {visibleToast && (
+        <div className={visibleToast.ok ? "toast toast-ok" : "toast toast-err"} key={visibleToast.key}>
+          {visibleToast.ok ? "✓ " : "✕ "}
+          {visibleToast.text}
+        </div>
+      )}
     </main>
   );
 }
